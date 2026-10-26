@@ -13,6 +13,10 @@ run_worker_first = true
 PREFIX = ""
 DOMAINS = ["nethanie.my.id"]
 DEFAULT_DOMAINS = ["nethanie.my.id"]
+JWT_SECRET = "rahasia-nethanie-2026-aman-sekali"
+ENABLE_USER_CREATE_EMAIL = true
+ENABLE_USER_DELETE_EMAIL = true
+ENABLE_AUTO_REPLY = false
 
 [[d1_databases]]
 binding = "DB"
