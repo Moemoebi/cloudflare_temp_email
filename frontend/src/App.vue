@@ -14,7 +14,7 @@ const theme = computed(() => (isDark.value ? darkTheme : null))
 const accessTab = ref('public')
 const privateLinkInput = ref('')
 
-// State Input Email & Domain (Default otomatis ke nethanie.my.id jika settings belum termuat)
+// State Input Email & Domain
 const emailPrefix = ref('')
 const selectedDomain = ref('nethanie.my.id')
 const domains = computed(() => {
@@ -36,7 +36,7 @@ const countdown = ref(10)
 
 // State Modal Admin (Buat / Ambil Ulang Link Private Email)
 const showAdminModal = ref(false)
-const adminTab = ref('create') // 'create' (Buat Baru) | 'recover' (Lupa/Ambil Link)
+const adminTab = ref('create')
 const adminPassword = ref('')
 const privatePrefix = ref('')
 const adminError = ref('')
@@ -44,6 +44,7 @@ const adminError = ref('')
 // State Feedback Tombol Copy
 const copiedEmail = ref(false)
 const copiedLink = ref(false)
+const copiedOtpId = ref(null)
 
 // Notifikasi Banner
 const statusMessage = ref('')
@@ -57,8 +58,42 @@ const showNotify = (msg, type = 'info') => {
   }, 5000)
 }
 
+// Fungsi Ekstrak Kode Verifikasi / OTP Otomatis (4 - 8 digit)
+const extractVerificationCode = (mail) => {
+  if (!mail) return null
+  const subject = mail.subject || ''
+  const textBody = mail.text || ''
+  // Bersihkan tag HTML jika memeriksa dari body HTML
+  const htmlBody = (mail.html || mail.message || '').replace(/<[^>]*>/g, ' ')
+  const combined = `${subject} ${textBody} ${htmlBody}`
+
+  // Prioritas 1: Cari di Subjek terlebih dahulu (paling akurat seperti "649087 is your verification code")
+  const subjectMatch = subject.match(/\b(\d{4,8})\b/)
+  if (subjectMatch) return subjectMatch[1]
+
+  // Prioritas 2: Cari angka 4-8 digit yang berdekatan dengan kata kunci verifikasi/OTP/kode
+  const keywordMatch = combined.match(/(?:code|kode|otp|verification|verifikasi|pin)[^0-9]{0,25}\b(\d{4,8})\b/i)
+    || combined.match(/\b(\d{4,8})\b[^a-zA-Z0-9]{0,15}(?:is your|adalah|verification|code|kode|otp)/i)
+  if (keywordMatch) return keywordMatch[1]
+
+  return null
+}
+
+// Fungsi Format Tanggal agar Ringkas & Rapi
+const formatMailDate = (dateStr) => {
+  if (!dateStr) return ''
+  // Jika format YYYY-MM-DD HH:mm:ss, tampilkan MM-DD HH:mm agar ringkas
+  const parts = dateStr.split(' ')
+  if (parts.length === 2) {
+    const datePart = parts[0].slice(5) // Ambil MM-DD
+    const timePart = parts[1].slice(0, 5) // Ambil HH:mm
+    return `${datePart} ${timePart}`
+  }
+  return dateStr
+}
+
 // Fungsi Salin Teks Anti-Gagal
-const copyText = async (text, type = 'email') => {
+const copyText = async (text, type = 'email', mailId = null) => {
   if (!text) return
   try {
     if (navigator.clipboard && window.isSecureContext) {
@@ -79,10 +114,14 @@ const copyText = async (text, type = 'email') => {
       copiedEmail.value = true
       setTimeout(() => { copiedEmail.value = false }, 2000)
       showNotify('Alamat email berhasil disalin!', 'success')
-    } else {
+    } else if (type === 'link') {
       copiedLink.value = true
       setTimeout(() => { copiedLink.value = false }, 2000)
       showNotify('Link Akses Private berhasil disalin!', 'success')
+    } else if (type === 'otp') {
+      copiedOtpId.value = mailId || 'detail'
+      setTimeout(() => { copiedOtpId.value = null }, 2000)
+      showNotify(`Kode verifikasi (${text}) berhasil disalin!`, 'success')
     }
   } catch (err) {
     showNotify('Gagal menyalin otomatis, silakan blok dan salin manual.', 'error')
@@ -493,7 +532,6 @@ onUnmounted(() => {
           <div v-if="accessTab === 'public'" class="public-form-section">
             <label class="section-label">MASUKKAN NAMA EMAIL PUBLIC (TANPA PASSWORD)</label>
             <div class="input-group">
-              <!-- Input Nama Email digabung rapi dengan Badge @nethanie.my.id -->
               <div class="merged-email-input">
                 <input 
                   v-model="emailPrefix" 
@@ -548,7 +586,7 @@ onUnmounted(() => {
         <!-- CARD BAWAH: KOTAK MASUK & PEMBACA PESAN -->
         <section class="nethanie-inbox-grid">
           
-          <!-- Daftar Pesan -->
+          <!-- Daftar Pesan (Kiri) -->
           <div class="nethanie-card inbox-list-card">
             <div class="inbox-header">
               <h3>📥 Kotak Masuk ({{ mails.length }})</h3>
@@ -575,15 +613,28 @@ onUnmounted(() => {
                 @click="selectMailItem(mail)"
               >
                 <div class="mail-item-top">
-                  <span class="mail-sender">{{ mail.source || 'Unknown Sender' }}</span>
-                  <span class="mail-date">{{ mail.created_at }}</span>
+                  <span class="mail-sender" :title="mail.source">{{ mail.source || 'Unknown Sender' }}</span>
+                  <span class="mail-date">{{ formatMailDate(mail.created_at) }}</span>
                 </div>
                 <div class="mail-subject">{{ mail.subject || '(Lihat Isi Pesan)' }}</div>
+
+                <!-- TOMBOL SALIN KODE VERIFIKASI OTOMATIS DI DAFTAR INBOX -->
+                <div v-if="extractVerificationCode(mail)" class="otp-row">
+                  <button 
+                    class="btn-otp-copy" 
+                    @click.stop="copyText(extractVerificationCode(mail), 'otp', mail.id)"
+                  >
+                    {{ copiedOtpId === mail.id 
+                      ? '✅ Kode Tersalin!' 
+                      : `📋 Salin Kode: ${extractVerificationCode(mail)}` 
+                    }}
+                  </button>
+                </div>
               </li>
             </ul>
           </div>
 
-          <!-- Isi Pesan -->
+          <!-- Isi Pesan (Kanan) -->
           <div class="nethanie-card mail-viewer-card">
             <div v-if="!selectedMail" class="empty-state">
               <p>👈 Pilih pesan di sebelah kiri untuk membaca isi email.</p>
@@ -595,15 +646,30 @@ onUnmounted(() => {
 
             <div v-else class="mail-detail">
               <div class="mail-detail-header">
-                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                <div class="mail-detail-title-row">
                   <h2>{{ selectedMail.subject || 'Detail Pesan' }}</h2>
-                  <button class="btn-small" style="color:#f87171;" @click="deleteMailItem(selectedMail.id)">
+                  <button class="btn-small" style="color:#f87171; flex-shrink:0;" @click="deleteMailItem(selectedMail.id)">
                     🗑️ Hapus
                   </button>
                 </div>
+
+                <!-- KOTAK KODE OTP DI DETAIL EMAIL JIKA ADA KODE VERIFIKASI -->
+                <div v-if="extractVerificationCode(selectedMail)" class="detail-otp-banner">
+                  <div>
+                    <span class="detail-otp-label">🔑 Kode Verifikasi Terdeteksi:</span>
+                    <strong class="detail-otp-code">{{ extractVerificationCode(selectedMail) }}</strong>
+                  </div>
+                  <button 
+                    class="btn-primary btn-otp-large" 
+                    @click="copyText(extractVerificationCode(selectedMail), 'otp', 'detail')"
+                  >
+                    {{ copiedOtpId === 'detail' ? '✅ Tersalin!' : '📋 Salin Kode' }}
+                  </button>
+                </div>
+
                 <div class="mail-meta">
-                  <span><b>Dari:</b> {{ selectedMail.source }}</span>
-                  <span><b>Waktu:</b> {{ selectedMail.created_at }}</span>
+                  <span class="meta-item"><b>Dari:</b> {{ selectedMail.source }}</span>
+                  <span class="meta-item"><b>Waktu:</b> {{ selectedMail.created_at }}</span>
                 </div>
               </div>
 
@@ -629,7 +695,6 @@ onUnmounted(() => {
           :bordered="false"
           size="huge"
         >
-          <!-- Pilihan Tab di dalam Modal Admin -->
           <div class="access-tabs" style="margin-bottom: 14px;">
             <button 
               :class="['tab-btn', adminTab === 'create' ? 'active' : '']"
@@ -746,6 +811,8 @@ onUnmounted(() => {
   padding: 20px;
   border: 1px solid rgba(148, 163, 184, 0.15);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .dark-mode .nethanie-card { background-color: #111827; }
 .light-mode .nethanie-card { background-color: #ffffff; }
@@ -854,7 +921,6 @@ onUnmounted(() => {
 
 .input-group { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
 
-/* INPUT MENYATU DENGAN BADGE @DOMAIN ALA CRONIES */
 .merged-email-input {
   flex: 1;
   min-width: 240px;
@@ -865,9 +931,7 @@ onUnmounted(() => {
   background: rgba(15, 23, 42, 0.5);
   overflow: hidden;
 }
-.light-mode .merged-email-input {
-  background: #f1f5f9;
-}
+.light-mode .merged-email-input { background: #f1f5f9; }
 .clean-input {
   flex: 1;
   padding: 10px 14px;
@@ -888,9 +952,7 @@ onUnmounted(() => {
   white-space: nowrap;
   user-select: none;
 }
-.light-mode .domain-badge {
-  color: #6d28d9;
-}
+.light-mode .domain-badge { color: #6d28d9; }
 .domain-select-clean {
   padding: 10px 12px;
   border: none;
@@ -958,14 +1020,15 @@ onUnmounted(() => {
   font-size: 16px;
 }
 
+/* GRID KOTAK MASUK (ANTI MELUBER / OVERFLOW) */
 .nethanie-inbox-grid {
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: 360px minmax(0, 1fr);
   gap: 20px;
   min-height: 460px;
 }
 @media (max-width: 820px) {
-  .nethanie-inbox-grid { grid-template-columns: 1fr; }
+  .nethanie-inbox-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .inbox-header {
   display: flex;
@@ -994,19 +1057,38 @@ onUnmounted(() => {
   border-radius: 10px;
   border: 1px solid rgba(148, 163, 184, 0.12);
   cursor: pointer;
+  overflow: hidden;
 }
 .mail-item:hover, .mail-item.active {
   background: rgba(139, 92, 246, 0.12);
   border-color: rgba(139, 92, 246, 0.4);
 }
+
+/* PERBAIKAN BARIS PENGIRIM & TANGGAL AGAR TIDAK KELUAR BATAS */
 .mail-item-top {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 10px;
   font-size: 12px;
   opacity: 0.75;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+  width: 100%;
 }
-.mail-sender { font-weight: 600; }
+.mail-sender {
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mail-date {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 11px;
+  opacity: 0.85;
+}
 .mail-subject {
   font-size: 14px;
   font-weight: 600;
@@ -1014,14 +1096,76 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* TOMBOL SALIN KODE VERIFIKASI (OTP) */
+.otp-row {
+  margin-top: 8px;
+  display: flex;
+}
+.btn-otp-copy {
+  background: rgba(16, 185, 129, 0.16);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-otp-copy:hover {
+  background: rgba(16, 185, 129, 0.28);
+}
+.light-mode .btn-otp-copy {
+  color: #059669;
+}
+
+/* BANNER OTP DI PANEL KANAN (DETAIL EMAIL) */
+.detail-otp-banner {
+  margin: 12px 0;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px dashed rgba(16, 185, 129, 0.45);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.detail-otp-label {
+  font-size: 12px;
+  opacity: 0.85;
+  display: block;
+}
+.detail-otp-code {
+  font-size: 22px;
+  letter-spacing: 2px;
+  color: #34d399;
+}
+.light-mode .detail-otp-code {
+  color: #059669;
+}
+.btn-otp-large {
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
 .empty-state { text-align: center; padding: 60px 20px; opacity: 0.6; }
 .mail-detail-header {
   border-bottom: 1px solid rgba(148, 163, 184, 0.15);
   padding-bottom: 12px;
   margin-bottom: 14px;
 }
-.mail-detail-header h2 { margin: 0 0 8px 0; font-size: 18px; }
+.mail-detail-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.mail-detail-header h2 { margin: 0 0 8px 0; font-size: 18px; word-break: break-word; }
 .mail-meta { display: flex; gap: 16px; font-size: 12px; opacity: 0.75; flex-wrap: wrap; }
+.meta-item { word-break: break-all; }
 .mail-iframe {
   width: 100%;
   min-height: 360px;
