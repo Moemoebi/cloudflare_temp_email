@@ -10,15 +10,15 @@ const { jwt, settings, openSettings } = useGlobalState()
 const isDark = ref(true)
 const theme = computed(() => (isDark.value ? darkTheme : null))
 
-// Tab Mode Akses: 'public' (buka/buat public) atau 'private_link' (paste link/token)
+// Tab Mode Akses di Halaman Utama: 'public' atau 'private_link'
 const accessTab = ref('public')
 const privateLinkInput = ref('')
 
-// State Input Email & Domain
+// State Input Email & Domain (Default otomatis ke nethanie.my.id jika settings belum termuat)
 const emailPrefix = ref('')
-const selectedDomain = ref('')
+const selectedDomain = ref('nethanie.my.id')
 const domains = computed(() => {
-  const list = settings.value?.domains || []
+  const list = settings.value?.domains?.length ? settings.value.domains : ['nethanie.my.id']
   return list.map(d => ({ label: `@${d}`, value: d }))
 })
 
@@ -34,8 +34,9 @@ const loading = ref(false)
 const autoRefreshTimer = ref(null)
 const countdown = ref(10)
 
-// State Modal Admin (Buat Private Email)
+// State Modal Admin (Buat / Ambil Ulang Link Private Email)
 const showAdminModal = ref(false)
+const adminTab = ref('create') // 'create' (Buat Baru) | 'recover' (Lupa/Ambil Link)
 const adminPassword = ref('')
 const privatePrefix = ref('')
 const adminError = ref('')
@@ -88,14 +89,14 @@ const copyText = async (text, type = 'email') => {
   }
 }
 
-// 1A. FUNGSI KHUSUS BUKA INBOX PUBLIC (action: 'open')
+// 1A. FUNGSI BUKA INBOX PUBLIC (action: 'open')
 const openPublicInbox = async () => {
   if (!emailPrefix.value.trim()) {
     showNotify('Ketik nama email yang ingin dibuka terlebih dahulu!', 'error')
     return
   }
   const cleanPrefix = emailPrefix.value.trim().toLowerCase().split('@')[0]
-  const domain = selectedDomain.value || (settings.value.domains?.[0] || '')
+  const domain = selectedDomain.value || 'nethanie.my.id'
 
   loading.value = true
   statusMessage.value = ''
@@ -130,14 +131,14 @@ const openPublicInbox = async () => {
   }
 }
 
-// 1B. FUNGSI KHUSUS BUAT EMAIL PUBLIC BARU (action: 'create')
+// 1B. FUNGSI BUAT EMAIL PUBLIC BARU (action: 'create')
 const createPublicInbox = async () => {
   if (!emailPrefix.value.trim()) {
     showNotify('Ketik nama email baru yang ingin dibuat, atau klik tombol Random!', 'error')
     return
   }
   const cleanPrefix = emailPrefix.value.trim().toLowerCase().split('@')[0]
-  const domain = selectedDomain.value || (settings.value.domains?.[0] || '')
+  const domain = selectedDomain.value || 'nethanie.my.id'
 
   loading.value = true
   statusMessage.value = ''
@@ -228,8 +229,8 @@ const accessViaPrivateLink = async () => {
   }
 }
 
-// 4. Fungsi Buat PRIVATE Email (Khusus Admin: nethacantik)
-const createPrivateEmail = async () => {
+// 4. Fungsi Buat BARU atau AMBIL ULANG Link Private Email (Khusus Admin: nethacantik)
+const handleAdminPrivateAction = async () => {
   adminError.value = ''
 
   if (adminPassword.value !== 'nethacantik') {
@@ -237,12 +238,12 @@ const createPrivateEmail = async () => {
     return
   }
   if (!privatePrefix.value.trim()) {
-    adminError.value = 'Masukkan nama email private yang ingin dibuat!'
+    adminError.value = 'Masukkan nama email private terlebih dahulu!'
     return
   }
 
   const cleanPrefix = privatePrefix.value.trim().toLowerCase().split('@')[0]
-  const domain = selectedDomain.value || (settings.value.domains?.[0] || '')
+  const domain = selectedDomain.value || 'nethanie.my.id'
 
   loading.value = true
   try {
@@ -252,7 +253,7 @@ const createPrivateEmail = async () => {
         'x-admin-auth': adminPassword.value
       },
       body: JSON.stringify({
-        action: 'create',
+        action: adminTab.value === 'recover' ? 'recover' : 'create',
         name: cleanPrefix,
         domain: domain,
         is_private: true,
@@ -275,10 +276,15 @@ const createPrivateEmail = async () => {
       
       await fetchMails()
       await copyText(link, 'link')
-      showNotify(`Private Email ${currentAddress.value} berhasil dibuat & Link disalin!`, 'success')
+
+      if (adminTab.value === 'recover') {
+        showNotify(`Link Private untuk ${currentAddress.value} berhasil diambil ulang & disalin!`, 'success')
+      } else {
+        showNotify(`Private Email ${currentAddress.value} berhasil dibuat & Link disalin!`, 'success')
+      }
     }
   } catch (err) {
-    adminError.value = err.message || 'Gagal membuat email private.'
+    adminError.value = err.message || 'Gagal memproses email private.'
   } finally {
     loading.value = false
   }
@@ -412,8 +418,8 @@ onUnmounted(() => {
         </div>
 
         <div class="header-actions">
-          <button class="btn-outline" @click="showAdminModal = true">
-            👑 Admin: Buat Private Email
+          <button class="btn-outline" @click="showAdminModal = true; adminTab = 'create'">
+            👑 Admin: Buat / Ambil Private Email
           </button>
           <button class="btn-icon" @click="isDark = !isDark" title="Ganti Tema">
             {{ isDark ? '☀️' : '🌙' }}
@@ -483,29 +489,36 @@ onUnmounted(() => {
             </button>
           </div>
 
-          <!-- TAB 1: EMAIL PUBLIC (DIPISAH TOMBOL BUKA INBOX & BUAT BARU) -->
+          <!-- TAB 1: EMAIL PUBLIC -->
           <div v-if="accessTab === 'public'" class="public-form-section">
             <label class="section-label">MASUKKAN NAMA EMAIL PUBLIC (TANPA PASSWORD)</label>
             <div class="input-group">
-              <input 
-                v-model="emailPrefix" 
-                type="text" 
-                placeholder="Ketik username (contoh: budi99)" 
-                class="custom-input"
-                @keyup.enter="openPublicInbox"
-              />
-              <select v-model="selectedDomain" class="custom-select">
-                <option v-for="d in domains" :key="d.value" :value="d.value">
-                  {{ d.label }}
-                </option>
-              </select>
-              <button class="btn-primary" :disabled="loading" @click="openPublicInbox" title="Buka inbox dari email yang sudah ada">
+              <!-- Input Nama Email digabung rapi dengan Badge @nethanie.my.id -->
+              <div class="merged-email-input">
+                <input 
+                  v-model="emailPrefix" 
+                  type="text" 
+                  placeholder="Ketik nama email (contoh: nethanie)" 
+                  class="clean-input"
+                  @keyup.enter="openPublicInbox"
+                />
+                <span v-if="domains.length <= 1" class="domain-badge">
+                  @{{ selectedDomain }}
+                </span>
+                <select v-else v-model="selectedDomain" class="domain-select-clean">
+                  <option v-for="d in domains" :key="d.value" :value="d.value">
+                    {{ d.label }}
+                  </option>
+                </select>
+              </div>
+
+              <button class="btn-primary" :disabled="loading" @click="openPublicInbox">
                 {{ loading ? 'Memuat...' : '📬 Buka Inbox' }}
               </button>
-              <button class="btn-secondary" :disabled="loading" @click="createPublicInbox" title="Buat email public baru dengan nama ini">
+              <button class="btn-secondary" :disabled="loading" @click="createPublicInbox">
                 ➕ Buat Baru
               </button>
-              <button class="btn-secondary" :disabled="loading" @click="generateRandomPublic" title="Buat email public acak">
+              <button class="btn-secondary" :disabled="loading" @click="generateRandomPublic">
                 🎲 Random
               </button>
             </div>
@@ -527,7 +540,7 @@ onUnmounted(() => {
               </button>
             </div>
             <p class="helper-text">
-              *Gunakan menu ini jika Anda memiliki Link Akses Khusus untuk membuka email yang bersifat Private.
+              *Lupa Link Akses Private Anda? Klik tombol <b>👑 Admin: Buat / Ambil Private Email</b> di pojok kanan atas untuk mengambil ulang link.
             </p>
           </div>
         </section>
@@ -608,45 +621,74 @@ onUnmounted(() => {
         </section>
       </main>
 
-      <!-- MODAL ADMIN: BUAT PRIVATE EMAIL -->
+      <!-- MODAL ADMIN: BUAT BARU / AMBIL ULANG LINK PRIVATE EMAIL -->
       <n-modal v-model:show="showAdminModal">
         <n-card
-          style="width: 440px; max-width: 95vw; border-radius: 16px;"
-          title="👑 Buat Private Email (Khusus Nethanie)"
+          style="width: 460px; max-width: 95vw; border-radius: 16px;"
+          title="👑 Menu Private Email (Khusus Nethanie)"
           :bordered="false"
           size="huge"
         >
+          <!-- Pilihan Tab di dalam Modal Admin -->
+          <div class="access-tabs" style="margin-bottom: 14px;">
+            <button 
+              :class="['tab-btn', adminTab === 'create' ? 'active' : '']"
+              style="flex: 1;"
+              @click="adminTab = 'create'; adminError = ''"
+            >
+              🔒 Buat Private Baru
+            </button>
+            <button 
+              :class="['tab-btn', adminTab === 'recover' ? 'active' : '']"
+              style="flex: 1;"
+              @click="adminTab = 'recover'; adminError = ''"
+            >
+              🔗 Lupa / Ambil Link
+            </button>
+          </div>
+
           <div class="modal-form">
+            <p class="helper-text" style="margin: 0 0 8px 0;">
+              {{ adminTab === 'create' 
+                ? 'Buat email baru yang dikunci agar tidak bisa dibuka orang lain dari kolom Public.' 
+                : 'Ketik nama email Private Anda yang sudah pernah dibuat untuk mengambil kembali Link Aksesnya.' 
+              }}
+            </p>
+
             <label>Password Admin</label>
             <input 
               v-model="adminPassword" 
               type="password" 
+              autocomplete="new-password"
               placeholder="Masukkan password admin..." 
               class="custom-input full-width"
             />
 
-            <label style="margin-top: 10px;">Nama Email Private</label>
-            <div class="input-group">
+            <label style="margin-top: 10px;">
+              {{ adminTab === 'create' ? 'Nama Email Private Baru' : 'Nama Email Private yang Ingin Diambil Linknya' }}
+            </label>
+            
+            <div class="merged-email-input">
               <input 
                 v-model="privatePrefix" 
                 type="text" 
+                autocomplete="off"
                 placeholder="contoh: akunvip01" 
-                class="custom-input"
-                @keyup.enter="createPrivateEmail"
+                class="clean-input"
+                @keyup.enter="handleAdminPrivateAction"
               />
-              <select v-model="selectedDomain" class="custom-select">
-                <option v-for="d in domains" :key="d.value" :value="d.value">
-                  {{ d.label }}
-                </option>
-              </select>
+              <span class="domain-badge">@{{ selectedDomain }}</span>
             </div>
 
             <p v-if="adminError" class="error-text">{{ adminError }}</p>
 
             <div class="modal-actions">
               <button class="btn-secondary" @click="showAdminModal = false">Batal</button>
-              <button class="btn-primary" :disabled="loading" @click="createPrivateEmail">
-                {{ loading ? 'Memproses...' : '🔒 Buat & Kunci Email' }}
+              <button class="btn-primary" :disabled="loading" @click="handleAdminPrivateAction">
+                {{ loading 
+                  ? 'Memproses...' 
+                  : (adminTab === 'create' ? '🔒 Buat & Kunci Email' : '🔗 Ambil Link & Buka Inbox') 
+                }}
               </button>
             </div>
           </div>
@@ -810,22 +852,72 @@ onUnmounted(() => {
 }
 .light-mode .tab-btn.active { color: #6d28d9; }
 
-.input-group { display: flex; gap: 8px; flex-wrap: wrap; }
-.custom-input, .custom-select {
-  padding: 10px 14px;
+.input-group { display: flex; gap: 8px; flex-wrap: wrap; align-items: stretch; }
+
+/* INPUT MENYATU DENGAN BADGE @DOMAIN ALA CRONIES */
+.merged-email-input {
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  align-items: center;
   border-radius: 10px;
   border: 1px solid rgba(148, 163, 184, 0.25);
-  background: rgba(15, 23, 42, 0.4);
+  background: rgba(15, 23, 42, 0.5);
+  overflow: hidden;
+}
+.light-mode .merged-email-input {
+  background: #f1f5f9;
+}
+.clean-input {
+  flex: 1;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
   color: inherit;
   font-size: 14px;
   outline: none;
+  min-width: 120px;
 }
-.custom-select { min-width: 155px; }
-.light-mode .custom-input, .light-mode .custom-select { background: #f1f5f9; }
-.custom-input { flex: 1; min-width: 160px; }
+.domain-badge {
+  padding: 10px 14px;
+  background: rgba(139, 92, 246, 0.15);
+  color: #c4b5fd;
+  font-weight: 600;
+  font-size: 13px;
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
+  white-space: nowrap;
+  user-select: none;
+}
+.light-mode .domain-badge {
+  color: #6d28d9;
+}
+.domain-select-clean {
+  padding: 10px 12px;
+  border: none;
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(139, 92, 246, 0.15);
+  color: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+}
+
+.custom-input {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.5);
+  color: inherit;
+  font-size: 14px;
+  outline: none;
+  flex: 1;
+  min-width: 160px;
+}
+.light-mode .custom-input { background: #f1f5f9; }
 .full-width { width: 100%; box-sizing: border-box; }
 
-.helper-text { font-size: 12px; opacity: 0.6; margin: 8px 0 0 0; }
+.helper-text { font-size: 12px; opacity: 0.65; margin: 8px 0 0 0; line-height: 1.4; }
 
 .btn-primary {
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
