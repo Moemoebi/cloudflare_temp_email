@@ -12,6 +12,7 @@ run_worker_first = true
 [vars]
 PREFIX = ""
 TITLE = "Nethanie Temp Mail"
+ADMIN_PASS = "nethacantik"
 DOMAINS = ["nethanie.my.id"]
 DEFAULT_DOMAINS = ["nethanie.my.id"]
 JWT_SECRET = "rahasia-nethanie-2026-aman-sekali"
