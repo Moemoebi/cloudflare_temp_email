@@ -10,7 +10,7 @@ const { jwt, settings, openSettings } = useGlobalState()
 const isDark = ref(true)
 const theme = computed(() => (isDark.value ? darkTheme : null))
 
-// Tab Mode Akses: 'public' (ketik nama) atau 'private_link' (paste link/token)
+// Tab Mode Akses: 'public' (buka/buat public) atau 'private_link' (paste link/token)
 const accessTab = ref('public')
 const privateLinkInput = ref('')
 
@@ -56,7 +56,7 @@ const showNotify = (msg, type = 'info') => {
   }, 5000)
 }
 
-// Fungsi Salin Teks Anti-Gagal (Jalan di HTTPS maupun HTTP)
+// Fungsi Salin Teks Anti-Gagal
 const copyText = async (text, type = 'email') => {
   if (!text) return
   try {
@@ -88,13 +88,13 @@ const copyText = async (text, type = 'email') => {
   }
 }
 
-// 1. Fungsi Buka / Buat Email PUBLIC (Siapa saja bisa ketik nama)
-const accessPublicEmail = async () => {
+// 1A. FUNGSI KHUSUS BUKA INBOX PUBLIC (action: 'open')
+const openPublicInbox = async () => {
   if (!emailPrefix.value.trim()) {
-    showNotify('Ketik nama email terlebih dahulu!', 'error')
+    showNotify('Ketik nama email yang ingin dibuka terlebih dahulu!', 'error')
     return
   }
-  const cleanPrefix = emailPrefix.value.trim().toLowerCase()
+  const cleanPrefix = emailPrefix.value.trim().toLowerCase().split('@')[0]
   const domain = selectedDomain.value || (settings.value.domains?.[0] || '')
 
   loading.value = true
@@ -103,6 +103,7 @@ const accessPublicEmail = async () => {
     const res = await api.fetch('/api/new_address', {
       method: 'POST',
       body: JSON.stringify({
+        action: 'open',
         name: cleanPrefix,
         domain: domain,
         is_private: false
@@ -117,7 +118,7 @@ const accessPublicEmail = async () => {
       selectedMail.value = null
       window.history.replaceState({}, document.title, window.location.pathname)
       await fetchMails()
-      showNotify(`Membuka Public Inbox: ${currentAddress.value}`, 'success')
+      showNotify(`Berhasil membuka Public Inbox: ${currentAddress.value}`, 'success')
     }
   } catch (err) {
     showNotify(
@@ -129,11 +130,50 @@ const accessPublicEmail = async () => {
   }
 }
 
+// 1B. FUNGSI KHUSUS BUAT EMAIL PUBLIC BARU (action: 'create')
+const createPublicInbox = async () => {
+  if (!emailPrefix.value.trim()) {
+    showNotify('Ketik nama email baru yang ingin dibuat, atau klik tombol Random!', 'error')
+    return
+  }
+  const cleanPrefix = emailPrefix.value.trim().toLowerCase().split('@')[0]
+  const domain = selectedDomain.value || (settings.value.domains?.[0] || '')
+
+  loading.value = true
+  statusMessage.value = ''
+  try {
+    const res = await api.fetch('/api/new_address', {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'create',
+        name: cleanPrefix,
+        domain: domain,
+        is_private: false
+      })
+    })
+
+    if (res && res.jwt) {
+      jwt.value = res.jwt
+      currentAddress.value = res.address || `${cleanPrefix}@${domain}`
+      isPrivateMode.value = false
+      shareableLink.value = ''
+      selectedMail.value = null
+      window.history.replaceState({}, document.title, window.location.pathname)
+      await fetchMails()
+      showNotify(`Email Public ${currentAddress.value} siap digunakan!`, 'success')
+    }
+  } catch (err) {
+    showNotify(err.message || 'Gagal membuat email public.', 'error')
+  } finally {
+    loading.value = false
+  }
+}
+
 // 2. Fungsi Random Email Public
 const generateRandomPublic = async () => {
   const randomStr = Math.random().toString(36).substring(2, 9)
   emailPrefix.value = randomStr
-  await accessPublicEmail()
+  await createPublicInbox()
 }
 
 // 3. Fungsi Buka Inbox via Link / Token Private (Paste Link di Web)
@@ -146,7 +186,6 @@ const accessViaPrivateLink = async () => {
 
   let extractedJwt = rawInput
   try {
-    // Jika user menempelkan URL lengkap (contoh: https://mail.nethanie.my.id/?jwt=eyJ...)
     if (rawInput.includes('jwt=')) {
       const urlObj = new URL(rawInput.startsWith('http') ? rawInput : `https://${rawInput}`)
       extractedJwt = urlObj.searchParams.get('jwt') || rawInput.split('jwt=')[1].split('&')[0]
@@ -202,7 +241,7 @@ const createPrivateEmail = async () => {
     return
   }
 
-  const cleanPrefix = privatePrefix.value.trim().toLowerCase()
+  const cleanPrefix = privatePrefix.value.trim().toLowerCase().split('@')[0]
   const domain = selectedDomain.value || (settings.value.domains?.[0] || '')
 
   loading.value = true
@@ -213,6 +252,7 @@ const createPrivateEmail = async () => {
         'x-admin-auth': adminPassword.value
       },
       body: JSON.stringify({
+        action: 'create',
         name: cleanPrefix,
         domain: domain,
         is_private: true,
@@ -296,10 +336,8 @@ const deleteMailItem = async (id) => {
 }
 
 onMounted(async () => {
-  // Set judul tab browser jadi Nethanie Mail
   document.title = 'Nethanie Mail — Temporary & Private Email'
 
-  // Redirect otomatis dari http ke https jika bukan di localhost
   if (window.location.protocol === 'http:' && !window.location.hostname.includes('localhost')) {
     window.location.href = window.location.href.replace(/^http:/i, 'https:')
     return
@@ -391,7 +429,7 @@ onUnmounted(() => {
       <!-- KONTEN UTAMA -->
       <main class="nethanie-main">
         
-        <!-- CARD ATAS: EMAIL AKTIF & PILIHAN AKSES (PUBLIC / LINK PRIVATE) -->
+        <!-- CARD ATAS: EMAIL AKTIF & PILIHAN AKSES -->
         <section class="nethanie-card">
           <div class="card-header-row">
             <span class="section-label">ALAMAT EMAIL AKTIF SAAT INI</span>
@@ -435,7 +473,7 @@ onUnmounted(() => {
               :class="['tab-btn', accessTab === 'public' ? 'active' : '']"
               @click="accessTab = 'public'"
             >
-              🌐 Buka / Buat Email Public
+              🌐 Email Public (Buka / Buat)
             </button>
             <button 
               :class="['tab-btn', accessTab === 'private_link' ? 'active' : '']"
@@ -445,26 +483,29 @@ onUnmounted(() => {
             </button>
           </div>
 
-          <!-- TAB 1: BUKA EMAIL PUBLIC (KETIK NAMA) -->
+          <!-- TAB 1: EMAIL PUBLIC (DIPISAH TOMBOL BUKA INBOX & BUAT BARU) -->
           <div v-if="accessTab === 'public'" class="public-form-section">
-            <label class="section-label">KETIK NAMA EMAIL PUBLIC (TANPA PASSWORD)</label>
+            <label class="section-label">MASUKKAN NAMA EMAIL PUBLIC (TANPA PASSWORD)</label>
             <div class="input-group">
               <input 
                 v-model="emailPrefix" 
                 type="text" 
                 placeholder="Ketik username (contoh: budi99)" 
                 class="custom-input"
-                @keyup.enter="accessPublicEmail"
+                @keyup.enter="openPublicInbox"
               />
               <select v-model="selectedDomain" class="custom-select">
                 <option v-for="d in domains" :key="d.value" :value="d.value">
                   {{ d.label }}
                 </option>
               </select>
-              <button class="btn-primary" :disabled="loading" @click="accessPublicEmail">
-                {{ loading ? 'Memuat...' : '🔍 Buka Inbox' }}
+              <button class="btn-primary" :disabled="loading" @click="openPublicInbox" title="Buka inbox dari email yang sudah ada">
+                {{ loading ? 'Memuat...' : '📬 Buka Inbox' }}
               </button>
-              <button class="btn-secondary" :disabled="loading" @click="generateRandomPublic">
+              <button class="btn-secondary" :disabled="loading" @click="createPublicInbox" title="Buat email public baru dengan nama ini">
+                ➕ Buat Baru
+              </button>
+              <button class="btn-secondary" :disabled="loading" @click="generateRandomPublic" title="Buat email public acak">
                 🎲 Random
               </button>
             </div>
@@ -743,7 +784,6 @@ onUnmounted(() => {
   margin: 18px 0;
 }
 
-/* TAB SWITCHER */
 .access-tabs {
   display: flex;
   gap: 8px;
@@ -768,9 +808,7 @@ onUnmounted(() => {
   color: #c4b5fd;
   opacity: 1;
 }
-.light-mode .tab-btn.active {
-  color: #6d28d9;
-}
+.light-mode .tab-btn.active { color: #6d28d9; }
 
 .input-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .custom-input, .custom-select {
@@ -787,11 +825,7 @@ onUnmounted(() => {
 .custom-input { flex: 1; min-width: 160px; }
 .full-width { width: 100%; box-sizing: border-box; }
 
-.helper-text {
-  font-size: 12px;
-  opacity: 0.6;
-  margin: 8px 0 0 0;
-}
+.helper-text { font-size: 12px; opacity: 0.6; margin: 8px 0 0 0; }
 
 .btn-primary {
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
