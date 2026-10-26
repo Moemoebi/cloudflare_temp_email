@@ -1,19 +1,16 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { 
-  NConfigProvider, NMessageProvider, NDialogProvider, NNotificationProvider,
-  darkTheme, NButton, NInput, NSelect, NModal, NCard, NTag, NSpin, NEmpty
-} from 'naive-ui'
+import { NConfigProvider, darkTheme, NModal, NCard } from 'naive-ui'
 import { useGlobalState } from './store'
 import { api } from './api'
 
 const { jwt, settings, openSettings } = useGlobalState()
 
-// State Tema (Default Dark ala Cronies)
+// Tema Default Dark Mode ala Cronies
 const isDark = ref(true)
 const theme = computed(() => (isDark.value ? darkTheme : null))
 
-// State Email & Domain
+// State Input Email & Domain
 const emailPrefix = ref('')
 const selectedDomain = ref('')
 const domains = computed(() => {
@@ -25,9 +22,10 @@ const currentAddress = ref('')
 const isPrivateMode = ref(false)
 const shareableLink = ref('')
 
-// State Inbox
+// State Kotak Masuk (Inbox)
 const mails = ref([])
 const selectedMail = ref(null)
+const mailDetailLoading = ref(false)
 const loading = ref(false)
 const autoRefreshTimer = ref(null)
 const countdown = ref(10)
@@ -39,9 +37,9 @@ const privatePrefix = ref('')
 const adminError = ref('')
 const createdPrivateLink = ref('')
 
-// State Pesan Status / Error
+// Notifikasi Banner
 const statusMessage = ref('')
-const statusType = ref('info') // 'info' | 'error' | 'success'
+const statusType = ref('info')
 
 const showNotify = (msg, type = 'info') => {
   statusMessage.value = msg
@@ -51,47 +49,41 @@ const showNotify = (msg, type = 'info') => {
   }, 5000)
 }
 
-// Ambil daftar kunci private yang disimpan di LocalStorage / Tag khusus
-// Catatan: Di cloudflare_temp_email bawaan, setiap email baru menghasilkan JWT unik.
-// Supaya email Public bisa diakses ketik nama tapi Private dikunci, kita gunakan sistem prefix/mapping
-// atau simpan daftar email public vs private.
+// 1. Fungsi Buka / Buat Email PUBLIC (Siapa saja bisa ketik nama)
 const accessPublicEmail = async () => {
   if (!emailPrefix.value.trim()) {
-    showNotify('Masukkan nama email terlebih dahulu!', 'error')
+    showNotify('Ketik nama email terlebih dahulu!', 'error')
     return
   }
   const cleanPrefix = emailPrefix.value.trim().toLowerCase()
   const domain = selectedDomain.value || (settings.value.domains?.[0] || '')
-  const fullEmail = `${cleanPrefix}@${domain}`
 
   loading.value = true
   statusMessage.value = ''
   try {
-    // Cek apakah email ini ditandai sebagai PRIVATE di server / aturan kita
-    // Jika kita gunakan endpoint bawaan /api/new_address, jika nama sudah dipakai oleh Private,
-    // backend cloudflare_temp_email akan menolak pembuatan ulang dengan nama yang sama!
     const res = await api.fetch('/api/new_address', {
       method: 'POST',
       body: JSON.stringify({
         name: cleanPrefix,
         domain: domain,
-        is_public: true // Flag tambahan jika worker Anda sudah dimodifikasi untuk public/private
+        is_private: false
       })
     })
 
     if (res && res.jwt) {
       jwt.value = res.jwt
-      currentAddress.value = res.address || fullEmail
+      currentAddress.value = res.address || `${cleanPrefix}@${domain}`
       isPrivateMode.value = false
       shareableLink.value = ''
       selectedMail.value = null
+      // Bersihkan parameter ?jwt= di URL jika tadinya dari link private
+      window.history.replaceState({}, document.title, window.location.pathname)
       await fetchMails()
-      showNotify(`Berhasil membuka inbox public: ${currentAddress.value}`, 'success')
+      showNotify(`Membuka Public Inbox: ${currentAddress.value}`, 'success')
     }
   } catch (err) {
-    // Jika gagal karena email sudah dikunci / dibuat sebagai Private
     showNotify(
-      'Akses Ditolak! Email ini bersifat PRIVATE dan hanya bisa dibuka melalui Link Akses Khusus.',
+      err.message || 'Akses Ditolak! Email ini bersifat PRIVATE dan hanya bisa diakses lewat Link Khusus.',
       'error'
     )
   } finally {
@@ -99,14 +91,14 @@ const accessPublicEmail = async () => {
   }
 }
 
-// Generate Random Public Email
+// 2. Fungsi Random Email Public
 const generateRandomPublic = async () => {
   const randomStr = Math.random().toString(36).substring(2, 9)
   emailPrefix.value = randomStr
   await accessPublicEmail()
 }
 
-// Buat Private Email (Khusus Admin: nethacantik)
+// 3. Fungsi Buat PRIVATE Email (Khusus Admin: nethacantik)
 const createPrivateEmail = async () => {
   adminError.value = ''
   createdPrivateLink.value = ''
@@ -133,7 +125,8 @@ const createPrivateEmail = async () => {
       body: JSON.stringify({
         name: cleanPrefix,
         domain: domain,
-        is_private: true
+        is_private: true,
+        admin_password: adminPassword.value
       })
     })
 
@@ -141,8 +134,7 @@ const createPrivateEmail = async () => {
       jwt.value = res.jwt
       currentAddress.value = res.address || `${cleanPrefix}@${domain}`
       isPrivateMode.value = true
-      
-      // Buat Link Akses Khusus
+
       const origin = window.location.origin
       const link = `${origin}/?jwt=${res.jwt}`
       shareableLink.value = link
@@ -150,36 +142,75 @@ const createPrivateEmail = async () => {
 
       selectedMail.value = null
       await fetchMails()
-      showNotify(`Private Email berhasil dibuat!`, 'success')
+      showNotify(`Private Email ${currentAddress.value} berhasil dibuat & dikunci!`, 'success')
     }
   } catch (err) {
-    adminError.value = err.message || 'Gagal membuat email private (mungkin nama sudah terpakai).'
+    adminError.value = err.message || 'Gagal membuat email private.'
   } finally {
     loading.value = false
   }
 }
 
-// Ambil Daftar Email Masuk (Inbox)
+// 4. Ambil Daftar Email Masuk
 const fetchMails = async () => {
   if (!jwt.value) return
   try {
-    const res = await api.fetch(`/api/mails?limit=20&offset=0`)
+    // Coba gunakan parsed_mails terlebih dahulu agar subjek & isi langsung rapi
+    const res = await api.fetch(`/api/parsed_mails?limit=20&offset=0`).catch(() => null)
     if (res && res.results) {
       mails.value = res.results
+      return
+    }
+    // Fallback ke /api/mails standar
+    const fallbackRes = await api.fetch(`/api/mails?limit=20&offset=0`)
+    if (fallbackRes && fallbackRes.results) {
+      mails.value = fallbackRes.results
     }
   } catch (err) {
-    console.error('Gagal mengambil email:', err)
+    console.error('Gagal mengambil daftar email:', err)
   }
 }
 
-// Copy teks ke Clipboard
+// 5. Buka Detail Isi Email Saat Diklik
+const selectMailItem = async (mail) => {
+  selectedMail.value = mail
+  if (mail.html || mail.text || mail.message) return
+
+  mailDetailLoading.value = true
+  try {
+    const detail = await api.fetch(`/api/parsed_mail/${mail.id}`).catch(() => null)
+    if (detail) {
+      selectedMail.value = { ...mail, ...detail }
+    } else {
+      const rawDetail = await api.fetch(`/api/mail/${mail.id}`)
+      selectedMail.value = { ...mail, ...rawDetail }
+    }
+  } catch (e) {
+    console.error('Gagal memuat detail email:', e)
+  } finally {
+    mailDetailLoading.value = false
+  }
+}
+
+// 6. Hapus Email
+const deleteMailItem = async (id) => {
+  try {
+    await api.fetch(`/api/mails/${id}`, { method: 'DELETE' })
+    mails.value = mails.value.filter(m => m.id !== id)
+    if (selectedMail.value?.id === id) selectedMail.value = null
+    showNotify('Pesan berhasil dihapus', 'success')
+  } catch (e) {
+    showNotify('Gagal menghapus pesan', 'error')
+  }
+}
+
+// Salin ke Clipboard
 const copyText = (text, label = 'Teks') => {
   if (!text) return
   navigator.clipboard.writeText(text)
   showNotify(`${label} berhasil disalin!`, 'success')
 }
 
-// Cek apakah user membuka via Link Akses Khusus (?jwt=...)
 onMounted(async () => {
   try {
     await openSettings()
@@ -190,11 +221,11 @@ onMounted(async () => {
     console.error(e)
   }
 
+  // Cek apakah dibuka melalui Link Khusus Private (?jwt=...)
   const urlParams = new URLSearchParams(window.location.search)
   const urlJwt = urlParams.get('jwt')
 
   if (urlJwt) {
-    // Jika masuk lewat Link Akses Private
     jwt.value = urlJwt
     isPrivateMode.value = true
     shareableLink.value = window.location.href
@@ -204,12 +235,11 @@ onMounted(async () => {
         currentAddress.value = settingsRes.address
       }
       await fetchMails()
-      showNotify('Berhasil masuk melalui Link Akses Khusus (Private Mode)', 'success')
+      showNotify('Berhasil masuk ke Private Inbox melalui Link Khusus!', 'success')
     } catch (e) {
-      showNotify('Link akses tidak valid atau sudah kadaluarsa.', 'error')
+      showNotify('Link Akses Private tidak valid atau sudah kadaluarsa.', 'error')
     }
   } else if (jwt.value) {
-    // Jika sudah ada sesi sebelumnya
     try {
       const settingsRes = await api.fetch('/api/settings')
       if (settingsRes && settingsRes.address) {
@@ -221,7 +251,7 @@ onMounted(async () => {
     }
   }
 
-  // Timer Auto-Refresh tiap 10 detik
+  // Auto-Refresh setiap 10 detik
   autoRefreshTimer.value = setInterval(() => {
     if (jwt.value) {
       countdown.value--
@@ -242,13 +272,13 @@ onUnmounted(() => {
   <n-config-provider :theme="theme">
     <div :class="['cronies-wrapper', isDark ? 'dark-mode' : 'light-mode']">
       
-      <!-- NAVBAR ALA CRONIES -->
+      <!-- HEADER ALA CRONIES -->
       <header class="cronies-header">
         <div class="brand">
-          <div class="brand-icon">✉️</div>
+          <div class="brand-icon">⚡</div>
           <div>
-            <h1 class="brand-title">TempMail</h1>
-            <span class="brand-subtitle">Fast & Secure Disposable Mailbox</span>
+            <h1 class="brand-title">CroniesMail</h1>
+            <span class="brand-subtitle">Temporary & Private Email Service</span>
           </div>
         </div>
 
@@ -262,7 +292,7 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <!-- NOTIFIKASI BANNER -->
+      <!-- BANNER NOTIFIKASI -->
       <div v-if="statusMessage" :class="['alert-banner', statusType]">
         {{ statusMessage }}
       </div>
@@ -270,21 +300,20 @@ onUnmounted(() => {
       <!-- KONTEN UTAMA -->
       <main class="cronies-main">
         
-        <!-- CARD 1: KONTROL EMAIL (PUBLIC ACCESS & ACTIVE ADDRESS) -->
-        <section class="cronies-card address-card">
+        <!-- CARD ATAS: EMAIL AKTIF & FORM PUBLIC -->
+        <section class="cronies-card">
           <div class="card-header-row">
-            <span class="section-label">ALAMAT EMAIL AKTIF</span>
+            <span class="section-label">ALAMAT EMAIL AKTIF SAAT INI</span>
             <span v-if="currentAddress" :class="['mode-badge', isPrivateMode ? 'private' : 'public']">
-              {{ isPrivateMode ? '🔒 PRIVATE INBOX' : '🌐 PUBLIC INBOX' }}
+              {{ isPrivateMode ? '🔒 PRIVATE INBOX (VIP)' : '🌐 PUBLIC INBOX' }}
             </span>
           </div>
 
-          <!-- Tampilan Email Aktif -->
           <div class="active-email-box">
             <input 
               type="text" 
               readonly 
-              :value="currentAddress || 'Belum ada email dipilih...'" 
+              :value="currentAddress || 'Belum ada inbox aktif...'" 
               class="active-email-input"
             />
             <button 
@@ -292,16 +321,16 @@ onUnmounted(() => {
               :disabled="!currentAddress"
               @click="copyText(currentAddress, 'Alamat Email')"
             >
-              📋 Salin
+              📋 Salin Email
             </button>
           </div>
 
-          <!-- Jika Mode Private, tampilkan Link Akses Khusus -->
+          <!-- Box Link Akses Khusus jika sedang di Mode Private -->
           <div v-if="isPrivateMode && shareableLink" class="private-link-box">
-            <span class="private-link-label">🔗 Link Akses Khusus (Simpan/Bagikan ke Pembeli):</span>
+            <span class="private-link-label">🔗 Link Akses Khusus (Hanya yang punya link ini yang bisa buka inbox):</span>
             <div class="private-link-row">
               <input type="text" readonly :value="shareableLink" class="private-link-input" />
-              <button class="btn-secondary" @click="copyText(shareableLink, 'Link Akses')">
+              <button class="btn-secondary" @click="copyText(shareableLink, 'Link Akses Khusus')">
                 Salin Link
               </button>
             </div>
@@ -309,14 +338,14 @@ onUnmounted(() => {
 
           <hr class="divider" />
 
-          <!-- Input Buka / Buat Email Public -->
+          <!-- Kolom Cari / Buat Email Public -->
           <div class="public-form-section">
-            <label class="section-label">BUKA / BUAT EMAIL PUBLIC (TANPA PASSWORD)</label>
+            <label class="section-label">BUKA / BUAT EMAIL PUBLIC (CUKUP KETIK NAMA)</label>
             <div class="input-group">
               <input 
                 v-model="emailPrefix" 
                 type="text" 
-                placeholder="Ketik nama email (contoh: budi123)" 
+                placeholder="Ketik username (contoh: budi99)" 
                 class="custom-input"
                 @keyup.enter="accessPublicEmail"
               />
@@ -326,38 +355,35 @@ onUnmounted(() => {
                 </option>
               </select>
               <button class="btn-primary" :disabled="loading" @click="accessPublicEmail">
-                {{ loading ? 'Memuat...' : 'Buka Inbox' }}
+                {{ loading ? 'Memuat...' : '🔍 Buka Inbox' }}
               </button>
               <button class="btn-secondary" :disabled="loading" @click="generateRandomPublic">
                 🎲 Random
               </button>
             </div>
-            <p class="helper-text">
-              *Siapa saja bisa mengakses email Public hanya dengan mengetik namanya. Untuk membuat email yang terkunci, gunakan tombol <b>Buat Private Email</b> di kanan atas.
-            </p>
           </div>
         </section>
 
-        <!-- CARD 2: INBOX & ISI PESAN (SPLIT ATAU LIST ALA CRONIES) -->
+        <!-- CARD BAWAH: KOTAK MASUK & PEMBACA PESAN -->
         <section class="cronies-inbox-grid">
           
-          <!-- Panel Kiri: Daftar Pesan Masuk -->
+          <!-- Daftar Pesan -->
           <div class="cronies-card inbox-list-card">
             <div class="inbox-header">
               <h3>📥 Kotak Masuk ({{ mails.length }})</h3>
               <div class="refresh-controls" v-if="jwt">
-                <span class="countdown-text">Auto-refresh: {{ countdown }}s</span>
+                <span class="countdown-text">{{ countdown }}s</span>
                 <button class="btn-small" @click="fetchMails">🔄 Refresh</button>
               </div>
             </div>
 
             <div v-if="!jwt" class="empty-state">
-              <p>Silakan ketik nama email di atas untuk membuka kotak masuk.</p>
+              <p>Ketik nama email di atas atau gunakan Link Khusus untuk melihat pesan masuk.</p>
             </div>
 
             <div v-else-if="mails.length === 0" class="empty-state">
-              <div class="pulse-ring"></div>
-              <p>Menunggu email masuk ke <b>{{ currentAddress }}</b>...</p>
+              <p>Belum ada pesan masuk ke<br><b>{{ currentAddress }}</b></p>
+              <span style="font-size: 12px;">Menunggu pesan baru secara otomatis...</span>
             </div>
 
             <ul v-else class="mail-list">
@@ -365,38 +391,48 @@ onUnmounted(() => {
                 v-for="mail in mails" 
                 :key="mail.id" 
                 :class="['mail-item', selectedMail?.id === mail.id ? 'active' : '']"
-                @click="selectedMail = mail"
+                @click="selectMailItem(mail)"
               >
                 <div class="mail-item-top">
-                  <span class="mail-sender">{{ mail.source || 'Pengirim Tidak Diketahui' }}</span>
+                  <span class="mail-sender">{{ mail.source || 'Unknown Sender' }}</span>
                   <span class="mail-date">{{ mail.created_at }}</span>
                 </div>
-                <div class="mail-subject">{{ mail.subject || '(Tanpa Subjek)' }}</div>
+                <div class="mail-subject">{{ mail.subject || '(Lihat Isi Pesan)' }}</div>
               </li>
             </ul>
           </div>
 
-          <!-- Panel Kanan: Isi Email -->
+          <!-- Isi Pesan -->
           <div class="cronies-card mail-viewer-card">
             <div v-if="!selectedMail" class="empty-state">
-              <p>👈 Pilih salah satu pesan di sebelah kiri untuk membaca isinya.</p>
+              <p>👈 Pilih pesan di sebelah kiri untuk membaca isi email.</p>
+            </div>
+
+            <div v-else-if="mailDetailLoading" class="empty-state">
+              <p>Sedang memuat isi pesan...</p>
             </div>
 
             <div v-else class="mail-detail">
               <div class="mail-detail-header">
-                <h2>{{ selectedMail.subject || '(Tanpa Subjek)' }}</h2>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                  <h2>{{ selectedMail.subject || 'Detail Pesan' }}</h2>
+                  <button class="btn-small" style="color:#f87171;" @click="deleteMailItem(selectedMail.id)">
+                    🗑️ Hapus
+                  </button>
+                </div>
                 <div class="mail-meta">
                   <span><b>Dari:</b> {{ selectedMail.source }}</span>
                   <span><b>Waktu:</b> {{ selectedMail.created_at }}</span>
                 </div>
               </div>
+
               <div class="mail-body">
                 <iframe 
-                  v-if="selectedMail.message || selectedMail.html" 
+                  v-if="selectedMail.html || selectedMail.message" 
                   :srcdoc="selectedMail.html || selectedMail.message" 
                   class="mail-iframe"
                 ></iframe>
-                <pre v-else class="mail-pre">{{ selectedMail.text || selectedMail.raw }}</pre>
+                <pre v-else class="mail-pre">{{ selectedMail.text || selectedMail.raw || '(Tidak ada konten teks)' }}</pre>
               </div>
             </div>
           </div>
@@ -407,12 +443,10 @@ onUnmounted(() => {
       <!-- MODAL ADMIN: BUAT PRIVATE EMAIL -->
       <n-modal v-model:show="showAdminModal">
         <n-card
-          style="width: 460px; max-width: 95vw; border-radius: 14px;"
+          style="width: 460px; max-width: 95vw; border-radius: 16px;"
           title="🔒 Buat Private Email (Khusus Admin)"
           :bordered="false"
           size="huge"
-          role="dialog"
-          aria-modal="true"
         >
           <div class="modal-form">
             <label>Password Admin</label>
@@ -423,12 +457,12 @@ onUnmounted(() => {
               class="custom-input full-width"
             />
 
-            <label style="margin-top: 12px;">Nama Email Private</label>
+            <label style="margin-top: 10px;">Nama Email Private</label>
             <div class="input-group">
               <input 
                 v-model="privatePrefix" 
                 type="text" 
-                placeholder="contoh: netflixvip01" 
+                placeholder="contoh: akunvip01" 
                 class="custom-input"
               />
               <select v-model="selectedDomain" class="custom-select">
@@ -441,9 +475,12 @@ onUnmounted(() => {
             <p v-if="adminError" class="error-text">{{ adminError }}</p>
 
             <div v-if="createdPrivateLink" class="success-box">
-              <p><b>✅ Berhasil Dibuat!</b> Hanya yang memiliki link ini yang bisa membuka inbox:</p>
+              <p style="margin:0 0 8px 0; font-size:13px;">
+                <b>✅ Email Private Berhasil Dikunci!</b><br>
+                Orang lain tidak akan bisa membukanya dari kolom Public. Gunakan atau berikan link ini:
+              </p>
               <input type="text" readonly :value="createdPrivateLink" class="custom-input full-width" />
-              <button class="btn-primary full-width" style="margin-top:8px;" @click="copyText(createdPrivateLink, 'Link Private')">
+              <button class="btn-primary full-width" style="margin-top:8px;" @click="copyText(createdPrivateLink, 'Link Akses Private')">
                 📋 Salin Link Akses Private
               </button>
             </div>
@@ -463,25 +500,15 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* RESET & TEMA CRONIES */
 .cronies-wrapper {
   min-height: 100vh;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   transition: background 0.2s, color 0.2s;
   padding-bottom: 40px;
 }
+.dark-mode { background-color: #0b0f19; color: #f1f5f9; }
+.light-mode { background-color: #f8fafc; color: #0f172a; }
 
-.dark-mode {
-  background-color: #0b0f19;
-  color: #f1f5f9;
-}
-
-.light-mode {
-  background-color: #f8fafc;
-  color: #0f172a;
-}
-
-/* HEADER */
 .cronies-header {
   max-width: 1100px;
   margin: 0 auto;
@@ -491,43 +518,18 @@ onUnmounted(() => {
   align-items: center;
   border-bottom: 1px solid rgba(148, 163, 184, 0.15);
 }
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
+.brand { display: flex; align-items: center; gap: 12px; }
 .brand-icon {
-  font-size: 28px;
+  font-size: 24px;
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  width: 44px;
-  height: 44px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 42px; height: 42px;
+  display: flex; align-items: center; justify-content: center;
   border-radius: 12px;
 }
+.brand-title { margin: 0; font-size: 20px; font-weight: 700; }
+.brand-subtitle { font-size: 12px; opacity: 0.65; }
+.header-actions { display: flex; gap: 10px; align-items: center; }
 
-.brand-title {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -0.5px;
-}
-
-.brand-subtitle {
-  font-size: 12px;
-  opacity: 0.65;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-/* LAYOUT UTAMA */
 .cronies-main {
   max-width: 1100px;
   margin: 24px auto 0;
@@ -536,21 +538,14 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 20px;
 }
-
 .cronies-card {
   border-radius: 16px;
   padding: 20px;
   border: 1px solid rgba(148, 163, 184, 0.15);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
-
-.dark-mode .cronies-card {
-  background-color: #111827;
-}
-
-.light-mode .cronies-card {
-  background-color: #ffffff;
-}
+.dark-mode .cronies-card { background-color: #111827; }
+.light-mode .cronies-card { background-color: #ffffff; }
 
 .card-header-row {
   display: flex;
@@ -558,7 +553,6 @@ onUnmounted(() => {
   align-items: center;
   margin-bottom: 10px;
 }
-
 .section-label {
   font-size: 11px;
   font-weight: 700;
@@ -567,34 +561,27 @@ onUnmounted(() => {
   display: block;
   margin-bottom: 8px;
 }
-
 .mode-badge {
   font-size: 11px;
   font-weight: 700;
   padding: 4px 10px;
   border-radius: 999px;
 }
-
 .mode-badge.public {
   background: rgba(16, 185, 129, 0.15);
   color: #10b981;
   border: 1px solid rgba(16, 185, 129, 0.3);
 }
-
 .mode-badge.private {
   background: rgba(245, 158, 11, 0.15);
   color: #f59e0b;
   border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
-/* KOTAK EMAIL AKTIF */
-.active-email-box {
-  display: flex;
-  gap: 10px;
-}
-
+.active-email-box { display: flex; gap: 10px; flex-wrap: wrap; }
 .active-email-input {
   flex: 1;
+  min-width: 220px;
   font-size: 18px;
   font-weight: 600;
   padding: 12px 16px;
@@ -612,7 +599,6 @@ onUnmounted(() => {
   background: rgba(245, 158, 11, 0.08);
   border: 1px dashed rgba(245, 158, 11, 0.4);
 }
-
 .private-link-label {
   font-size: 12px;
   color: #fbbf24;
@@ -620,12 +606,7 @@ onUnmounted(() => {
   display: block;
   margin-bottom: 6px;
 }
-
-.private-link-row {
-  display: flex;
-  gap: 8px;
-}
-
+.private-link-row { display: flex; gap: 8px; }
 .private-link-input {
   flex: 1;
   padding: 8px 12px;
@@ -635,20 +616,13 @@ onUnmounted(() => {
   color: inherit;
   font-size: 13px;
 }
-
 .divider {
   border: none;
   border-top: 1px solid rgba(148, 163, 184, 0.15);
   margin: 18px 0;
 }
 
-/* INPUT & TOMBOL */
-.input-group {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
+.input-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .custom-input, .custom-select {
   padding: 10px 14px;
   border-radius: 10px;
@@ -658,20 +632,9 @@ onUnmounted(() => {
   font-size: 14px;
   outline: none;
 }
-
-.light-mode .custom-input, .light-mode .custom-select {
-  background: #f1f5f9;
-}
-
-.custom-input {
-  flex: 1;
-  min-width: 180px;
-}
-
-.full-width {
-  width: 100%;
-  box-sizing: border-box;
-}
+.light-mode .custom-input, .light-mode .custom-select { background: #f1f5f9; }
+.custom-input { flex: 1; min-width: 180px; }
+.full-width { width: 100%; box-sizing: border-box; }
 
 .btn-primary {
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
@@ -681,13 +644,7 @@ onUnmounted(() => {
   border-radius: 10px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.2s;
 }
-
-.btn-primary:hover {
-  opacity: 0.9;
-}
-
 .btn-secondary {
   background: rgba(148, 163, 184, 0.15);
   color: inherit;
@@ -697,7 +654,6 @@ onUnmounted(() => {
   font-weight: 600;
   cursor: pointer;
 }
-
 .btn-outline {
   background: transparent;
   color: inherit;
@@ -708,61 +664,33 @@ onUnmounted(() => {
   font-size: 13px;
   cursor: pointer;
 }
-
 .btn-icon {
   background: rgba(148, 163, 184, 0.15);
   border: none;
-  width: 38px;
-  height: 38px;
+  width: 38px; height: 38px;
   border-radius: 10px;
   cursor: pointer;
   font-size: 16px;
 }
 
-.helper-text {
-  font-size: 12px;
-  opacity: 0.6;
-  margin-top: 8px;
-  margin-bottom: 0;
-}
-
-/* GRID INBOX */
 .cronies-inbox-grid {
   display: grid;
   grid-template-columns: 360px 1fr;
   gap: 20px;
   min-height: 460px;
 }
-
 @media (max-width: 820px) {
-  .cronies-inbox-grid {
-    grid-template-columns: 1fr;
-  }
+  .cronies-inbox-grid { grid-template-columns: 1fr; }
 }
-
 .inbox-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 14px;
 }
-
-.inbox-header h3 {
-  margin: 0;
-  font-size: 16px;
-}
-
-.refresh-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.countdown-text {
-  font-size: 12px;
-  opacity: 0.6;
-}
-
+.inbox-header h3 { margin: 0; font-size: 16px; }
+.refresh-controls { display: flex; align-items: center; gap: 8px; }
+.countdown-text { font-size: 12px; opacity: 0.6; }
 .btn-small {
   padding: 4px 10px;
   font-size: 12px;
@@ -772,29 +700,20 @@ onUnmounted(() => {
   color: inherit;
   cursor: pointer;
 }
-
 .mail-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  list-style: none; padding: 0; margin: 0;
+  display: flex; flex-direction: column; gap: 8px;
 }
-
 .mail-item {
   padding: 12px;
   border-radius: 10px;
   border: 1px solid rgba(148, 163, 184, 0.12);
   cursor: pointer;
-  transition: background 0.15s;
 }
-
 .mail-item:hover, .mail-item.active {
   background: rgba(99, 102, 241, 0.12);
   border-color: rgba(99, 102, 241, 0.4);
 }
-
 .mail-item-top {
   display: flex;
   justify-content: space-between;
@@ -802,11 +721,7 @@ onUnmounted(() => {
   opacity: 0.75;
   margin-bottom: 4px;
 }
-
-.mail-sender {
-  font-weight: 600;
-}
-
+.mail-sender { font-weight: 600; }
 .mail-subject {
   font-size: 14px;
   font-weight: 600;
@@ -814,31 +729,14 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
-.empty-state {
-  text-align: center;
-  padding: 60px 20px;
-  opacity: 0.6;
-}
-
+.empty-state { text-align: center; padding: 60px 20px; opacity: 0.6; }
 .mail-detail-header {
   border-bottom: 1px solid rgba(148, 163, 184, 0.15);
   padding-bottom: 12px;
   margin-bottom: 14px;
 }
-
-.mail-detail-header h2 {
-  margin: 0 0 8px 0;
-  font-size: 18px;
-}
-
-.mail-meta {
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
-  opacity: 0.75;
-}
-
+.mail-detail-header h2 { margin: 0 0 8px 0; font-size: 18px; }
+.mail-meta { display: flex; gap: 16px; font-size: 12px; opacity: 0.75; flex-wrap: wrap; }
 .mail-iframe {
   width: 100%;
   min-height: 360px;
@@ -846,7 +744,12 @@ onUnmounted(() => {
   border-radius: 8px;
   background: #fff;
 }
-
+.mail-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.5;
+}
 .alert-banner {
   max-width: 1100px;
   margin: 12px auto 0;
@@ -855,38 +758,19 @@ onUnmounted(() => {
   font-size: 14px;
   font-weight: 500;
 }
-
 .alert-banner.error {
   background: rgba(239, 68, 68, 0.15);
   color: #f87171;
   border: 1px solid rgba(239, 68, 68, 0.3);
 }
-
 .alert-banner.success {
   background: rgba(16, 185, 129, 0.15);
   color: #34d399;
   border: 1px solid rgba(16, 185, 129, 0.3);
 }
-
-.modal-form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 16px;
-}
-
-.error-text {
-  color: #f87171;
-  font-size: 13px;
-  margin: 4px 0;
-}
-
+.modal-form { display: flex; flex-direction: column; gap: 8px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.error-text { color: #f87171; font-size: 13px; margin: 4px 0; }
 .success-box {
   background: rgba(16, 185, 129, 0.1);
   border: 1px solid rgba(16, 185, 129, 0.3);
