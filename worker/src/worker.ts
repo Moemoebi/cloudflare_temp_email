@@ -154,8 +154,42 @@ const checkoutUserRolePayload = async (
 	}
 }
 
+// --- CUSTOM PUBLIC & ADMIN PRIVATE ENDPOINTS ---
+app.post('/api/custom/public-inbox', async (c) => {
+	const { address } = await c.req.json();
+	if (!address) return c.json({ error: 'Alamat email kosong' }, 400);
+
+	// Cek apakah email ini sudah dikunci (Private) di tabel address
+	const locked = await c.env.DB.prepare(
+		`SELECT id FROM address WHERE name = ?`
+	).bind(address).first();
+
+	if (locked) {
+		return c.json({ error: '🔒 Email ini dikunci (Private). Gunakan Link Akses / Kredensial untuk membuka.' }, 403);
+	}
+
+	const { results } = await c.env.DB.prepare(
+		`SELECT id, source, address, raw, created_at FROM raw_mails WHERE address = ? ORDER BY id DESC LIMIT 30`
+	).bind(address).all();
+
+	return c.json({ results: results || [] });
+});
+
+app.post('/api/custom/check-admin', async (c) => {
+	const { pin } = await c.req.json();
+	const adminPass = (c.env as any).ADMIN_PASS || "nethacantik";
+	if (pin !== adminPass) {
+		return c.json({ error: 'Password Admin salah!' }, 401);
+	}
+	return c.json({ ok: true });
+});
+
 // api auth
 app.use('/api/*', async (c, next) => {
+	if (c.req.path.startsWith("/api/custom/")) {
+		await next();
+		return;
+	}
 	if (c.req.path.startsWith("/api/new_address")) {
 		await checkUserPayload(c);
 		await next();
