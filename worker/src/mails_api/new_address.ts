@@ -1,7 +1,8 @@
 import { Context } from 'hono'
+import { Jwt } from 'hono/utils/jwt'
 
 import i18n from '../i18n';
-import { getBooleanValue, getJsonSetting, checkCfTurnstile, isAddressCountLimitReached, Jwt } from '../utils';
+import { getBooleanValue, getJsonSetting, checkCfTurnstile, isAddressCountLimitReached } from '../utils';
 import { newAddress, getAddressPrefix, generateRandomName } from '../common'
 import { CONSTANTS } from '../constants'
 
@@ -86,7 +87,7 @@ const createNewAddress = async (c: Context<HonoCustomType>) => {
                 const jwt = await Jwt.sign({
                     address: existingAddress.name,
                     address_id: existingAddress.id
-                }, c.env.JWT_SECRET, "2100-01-01");
+                }, c.env.JWT_SECRET, "HS256");
 
                 return c.json({
                     address: existingAddress.name,
@@ -104,7 +105,7 @@ const createNewAddress = async (c: Context<HonoCustomType>) => {
                 const jwt = await Jwt.sign({
                     address: existingAddress.name,
                     address_id: existingAddress.id
-                }, c.env.JWT_SECRET, "2100-01-01");
+                }, c.env.JWT_SECRET, "HS256");
 
                 return c.json({
                     address: existingAddress.name,
